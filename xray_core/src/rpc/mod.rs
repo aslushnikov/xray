@@ -118,6 +118,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_creating_service_in_async_response() {
+        let mut reactor = reactor::Core::new().unwrap();
+        let client = connect(&mut reactor, TestService::new(Rc::new(TestModel::new(42))));
+        let request_future = client.request(TestRequest::CreateServiceAsync);
+        let response = reactor.run(request_future).unwrap();
+        match response {
+            TestServiceResponse::ServiceCreated(id) => {
+                client
+                    .take_service::<TestService>(id)
+                    .expect("Service to exist by the time we receive a response");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
     fn test_add_service_on_init_or_update() {
         struct NoopService {
             init_called: bool,
@@ -276,6 +292,7 @@ pub(crate) mod tests {
         Increment(usize),
         CreateService,
         DropService,
+        CreateServiceAsync,
     }
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -332,6 +349,27 @@ pub(crate) mod tests {
                 TestRequest::DropService => {
                     self.child_service.take();
                     Some(Box::new(future::ok(TestServiceResponse::Ack)))
+                }
+                TestRequest::CreateServiceAsync => {
+                    use futures;
+                    use std::thread;
+
+                    let (tx, rx) = futures::sync::oneshot::channel();
+
+                    thread::spawn(|| {
+                        tx.send(()).unwrap();
+                    });
+
+                    let connection = connection.clone();
+                    Some(Box::new(rx.map_err(|_| unreachable!()).and_then(
+                        move |_| {
+                            let service_handle = connection
+                                .add_service(TestService::new(Rc::new(TestModel::new(0))));
+                            Ok(TestServiceResponse::ServiceCreated(
+                                service_handle.service_id(),
+                            ))
+                        },
+                    )))
                 }
             }
         }
